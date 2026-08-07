@@ -1,0 +1,39 @@
+{
+  "name": "pi-codex-env-run",
+  "version": "0.1.0",
+  "description": "Reuse Codex .codex/environments/*.toml actions in pi — /run command + run_env_action tool",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "codex",
+    "environment",
+    "actions",
+    "run"
+  ],
+  "author": "Ayagikei",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ayagikei/pi-codex-env-run.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ayagikei/pi-codex-env-run/issues"
+  },
+  "homepage": "https://github.com/Ayagikei/pi-codex-env-run#readme",
+  "files": [
+    "extensions/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

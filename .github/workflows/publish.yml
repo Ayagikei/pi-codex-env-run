@@ -48,5 +48,12 @@ jobs:
       - name: Run tests
         run: node --test tests/parser.test.mjs
 
+      - name: Debug OIDC env
+        run: |
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL != '' }}"
+          echo "npm version: $(npm --version)"
+
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --loglevel verbose
+        env:
+          npm_config_loglevel: verbose

@@ -43,7 +43,13 @@ jobs:
 
       - name: Bump version
         run: |
-          npm version "${{ steps.version.outputs.value }}" --no-git-tag-version
+          CURRENT=$(node -p "require('./package.json').version")
+          TARGET="${{ steps.version.outputs.value }}"
+          if [ "$CURRENT" != "$TARGET" ]; then
+            npm version "$TARGET" --no-git-tag-version
+          else
+            echo "Already at $TARGET, skipping bump"
+          fi
 
       - name: Run tests
         run: node --test tests/parser.test.mjs

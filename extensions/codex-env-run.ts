@@ -14,7 +14,45 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { dirname } from "node:path";
-import { collectActions, findEnvironmentsDir, type EnvAction } from "../src/parser.ts";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import {
+	addActionToToml,
+	collectActions,
+	findEnvironmentsDir,
+	parseEnvironmentToml,
+	removeActionFromToml,
+	resolveEnvFile,
+	type EnvAction,
+	updateActionInToml,
+	validateEnvironmentDir,
+	validateEnvironmentToml,
+	writeEnvironmentFile,
+} from "../src/parser.ts";
+
+/** Per-file validation issues for every TOML in an environment directory. */
+function loadEnvFilesForValidation(envDir: string): ReturnType<typeof validateEnvironmentToml>[] {
+	const all: ReturnType<typeof validateEnvironmentToml>[] = [];
+	let files: string[] = [];
+	try {
+		files = readdirSync(envDir).filter((f) => f.endsWith(".toml")).sort();
+	} catch {
+		return all;
+	}
+	for (const f of files) {
+		try {
+			all.push(...validateEnvironmentToml(readFileSync(join(envDir, f), "utf8")));
+		} catch {
+			// skip unreadable files
+		}
+	}
+	return all.flat();
+}
+
+/** Extract action names from a TOML document (for duplicate checks). */
+function parseTomlForCheck(toml: string): string[] {
+	return parseEnvironmentToml(toml, "environment.toml").actions.map((a) => a.name);
+}
 
 /** Map Codex action icons to a small emoji set for the selector UI. */
 function iconEmoji(icon?: string): string {
@@ -144,5 +182,142 @@ export default function (pi: ExtensionAPI) {
 				};
 			},
 		});
+
+		// Management tool: list / validate / add / update / remove env actions.
+		pi.registerTool({
+			name: "manage_env_action",
+			label: "Manage Codex Environment Actions",
+			description:
+				"List, validate, add, update or remove actions in .codex/environments/*.toml. " +
+				"validate reports TOML/required-field/duplicate/icon problems without running commands; " +
+				"add/update/remove edit the TOML block-precise (comments and other content are preserved). " +
+				"Use list first to discover existing action names.",
+			promptSnippet: "Manage preset project actions (manage_env_action)",
+			promptGuidelines: [
+				"Use manage_env_action to list, validate, add, update or remove preset actions in .codex/environments/*.toml.",
+				"Run validate after any add/update/remove to confirm the file is still valid.",
+			],
+			parameters: Type.Object({
+				operation: StringEnum(["list", "validate", "add", "update", "remove"] as const),
+				name: Type.Optional(Type.String({ description: "Action name (required for add/update/remove)" })),
+				command: Type.Optional(Type.String({ description: "Shell command (required for add/update)" })),
+				icon: Type.Optional(Type.String({ description: "Codex action icon, e.g. run/test/debug (add/update)" })),
+				file: Type.Optional(
+					Type.String({ description: "Target .toml filename inside .codex/environments (default environment.toml)" }),
+				),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, toolCtx) {
+				const { envDir } = refresh(toolCtx);
+				if (!envDir) {
+					return {
+						content: [{ type: "text", text: "No .codex/environments directory found (searched from cwd upward)" }],
+						details: {},
+					};
+				}
+
+				// list / validate operate on the whole directory.
+				if (params.operation === "list" || params.operation === "validate") {
+					if (params.operation === "list") {
+						const list = collectActions(envDir);
+						if (list.length === 0) {
+							return { content: [{ type: "text", text: "No actions found in .codex/environments/*.toml" }], details: {} };
+					}
+					const text = list
+						.map((a) => `- ${a.name}${a.icon ? ` [${a.icon}]` : ""} (${a.file})\n    ${a.command}`)
+						.join("\n");
+					return { content: [{ type: "text", text: text }], details: { count: list.length } };
+				}
+
+				// validate: per-file + cross-file issues.
+				const issues = [
+					...validateEnvironmentDir(envDir),
+					...loadEnvFilesForValidation(envDir),
+				];				if (issues.length === 0) {
+					return {
+						content: [{ type: "text", text: "Validation passed: no issues found." }],
+						details: { issues: 0 },
+					};
+				}
+				const text = issues.map((i) => `[${i.level.toUpperCase()}] ${i.message}${i.line ? ` (line ${i.line})` : ""}`).join("\n");
+				return {
+					content: [{ type: "text", text: text }],
+					details: { issues: issues.length, errors: issues.filter((i) => i.level === "error").length },
+				};
+			}
+
+			// add / update / remove target a single file (default environment.toml).
+			const fileName = params.file ?? "environment.toml";
+			const file = resolveEnvFile(envDir, fileName);
+			if (!file) {
+				return {
+					content: [{ type: "text", text: `Target file not found: ${fileName} (must be a .toml inside ${envDir})` }],
+					details: {},
+				};
+			}
+			const toml = readFileSync(file, "utf8");
+			const name = params.name?.trim();
+
+			if (params.operation === "add") {
+				if (!name) {
+					return { content: [{ type: "text", text: "add requires a non-empty name" }], details: {} };
+				}
+				if (!params.command?.trim()) {
+					return { content: [{ type: "text", text: "add requires a non-empty command" }], details: {} };
+				}
+				// Reject duplicates within the target file.
+				const existing = parseTomlForCheck(toml);
+				if (existing.some((n) => n.toLowerCase() === name.toLowerCase())) {
+					return {
+						content: [{ type: "text", text: `Action "${name}" already exists in ${fileName}; use update instead` }],
+						details: {},
+					};
+				}
+				const updated = addActionToToml(toml, { name, icon: params.icon, command: params.command });
+				writeEnvironmentFile(file, updated);
+				return {
+					content: [{ type: "text", text: `Added action "${name}" to ${fileName}. Run validate to confirm.` }],
+					details: { file: fileName },
+				};
+			}
+
+			if (params.operation === "update") {
+				if (!name) {
+					return { content: [{ type: "text", text: "update requires a non-empty name" }], details: {} };
+				}
+				if (!params.command?.trim()) {
+					return { content: [{ type: "text", text: "update requires a non-empty command" }], details: {} };
+				}
+				const updated = updateActionInToml(toml, name, { icon: params.icon, command: params.command });
+				if (updated === null) {
+					return {
+						content: [{ type: "text", text: `Action "${name}" not found in ${fileName}` }],
+						details: {},
+					};
+				}
+				writeEnvironmentFile(file, updated);
+				return {
+					content: [{ type: "text", text: `Updated action "${name}" in ${fileName}. Run validate to confirm.` }],
+					details: { file: fileName },
+				};
+			}
+
+			// remove
+			if (!name) {
+				return { content: [{ type: "text", text: "remove requires a non-empty name" }], details: {} };
+			}
+			const updated = removeActionFromToml(toml, name);
+			if (updated === null) {
+				return {
+					content: [{ type: "text", text: `Action "${name}" not found in ${fileName}` }],
+					details: {},
+				};
+			}
+			writeEnvironmentFile(file, updated);
+			return {
+				content: [{ type: "text", text: `Removed action "${name}" from ${fileName}. Run validate to confirm.` }],
+				details: { file: fileName },
+			};
+		},
 	});
+});
 }

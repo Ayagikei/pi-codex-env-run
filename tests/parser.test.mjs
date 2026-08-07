@@ -10,7 +10,7 @@ import path from "node:path";
 
 // Pure parser module: zero pi dependencies, works on any Node >= 22.6
 // (Node's built-in TypeScript type stripping).
-import { parseEnvironmentToml, findEnvironmentsDir, collectActions } from "../src/parser.ts";
+import { parseEnvironmentToml, findEnvironmentsDir, collectActions, addActionToToml, updateActionInToml, removeActionFromToml, validateEnvironmentToml, renderActionBlock } from "../src/parser.ts";
 
 test("parses simple single-line action with setup", () => {
 	const env = parseEnvironmentToml(
@@ -165,4 +165,117 @@ test("collectActions merges multiple toml files, dedupes by name", () => {
 	assert.equal(actions.find((a) => a.name === "Test")?.command, "npm test");
 
 	fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("addActionToToml appends a block, preserves existing content", () => {
+	const original = `# header comment
+version = 1
+name = "app"
+
+[[actions]]
+name = "Run"
+icon = "run"
+command = "npm run dev"
+`;
+	const updated = addActionToToml(original, { name: "Test", icon: "test", command: "npm test" });
+	const env = parseEnvironmentToml(updated, "environment.toml");
+	assert.equal(env.actions.length, 2);
+	assert.deepEqual(
+		env.actions.map((a) => a.name),
+		["Run", "Test"],
+	);
+	assert.ok(updated.includes("# header comment"));
+	assert.ok(updated.includes('name = "Test"'));
+});
+
+test("addActionToToml renders multi-line command with triple quotes", () => {
+	const updated = addActionToToml("", { name: "Dev", command: "cd frontend\nbun dev" });
+	assert.ok(updated.includes("command = '''"));
+	assert.ok(updated.includes("bun dev"));
+	const env = parseEnvironmentToml(updated, "environment.toml");
+	assert.equal(env.actions[0].command, "cd frontend\nbun dev");
+});
+
+test("updateActionInToml replaces only the target block", () => {
+	const original = `[[actions]]
+name = "Run"
+icon = "run"
+command = "npm run dev"
+
+[[actions]]
+name = "Lint"
+command = "npm lint"
+`;
+	const updated = updateActionInToml(original, "run", { command: "npm run dev --port 3000" });
+	assert.ok(updated);
+	const env = parseEnvironmentToml(updated, "environment.toml");
+	assert.equal(env.actions.length, 2);
+	assert.equal(env.actions[0].command, "npm run dev --port 3000");
+	assert.equal(env.actions[1].command, "npm lint");
+	assert.ok(updated.includes('name = "Run"'));
+	assert.ok(!updated.includes("--port 3000") === false); // command updated, name intact
+});
+
+test("updateActionInToml returns null for missing name", () => {
+	const updated = updateActionInToml("[[actions]]\nname = \"Run\"\ncommand = \"x\"\n", "Missing", { command: "y" });
+	assert.equal(updated, null);
+});
+
+test("removeActionFromToml deletes only the target block", () => {
+	const original = `[[actions]]
+name = "Run"
+command = "npm run dev"
+
+[[actions]]
+name = "Lint"
+command = "npm lint"
+`;
+	const updated = removeActionFromToml(original, "run");
+	assert.ok(updated);
+	const env = parseEnvironmentToml(updated, "environment.toml");
+	assert.equal(env.actions.length, 1);
+	assert.equal(env.actions[0].name, "Lint");
+	assert.ok(!updated.includes("npm run dev"));
+});
+
+test("removeActionFromToml returns null for missing name", () => {
+	const updated = removeActionFromToml("[[actions]]\nname = \"Run\"\ncommand = \"x\"\n", "Nope");
+	assert.equal(updated, null);
+});
+
+test("validateEnvironmentToml reports missing fields, duplicates and unknown icons", () => {
+	const toml = `[[actions]]
+name = "Ok"
+icon = "run"
+command = "npm ok"
+
+[[actions]]
+command = "no name"
+
+[[actions]]
+name = "NoCmd"
+
+[[actions]]
+name = "Dup"
+command = "a"
+
+[[actions]]
+name = "dup"
+command = "b"
+
+[[actions]]
+name = "BadIcon"
+icon = "rocket"
+command = "c"
+`;
+	const issues = validateEnvironmentToml(toml);
+	assert.ok(issues.some((i) => i.level === "error" && i.message.includes("missing required field: name")));
+	assert.ok(issues.some((i) => i.level === "error" && i.message.includes('"NoCmd" is missing required field: command')));
+	assert.ok(issues.some((i) => i.level === "error" && i.message.includes('duplicate action name "dup"')));
+	assert.ok(issues.some((i) => i.level === "warning" && i.message.includes('unknown icon "rocket"')));
+});
+
+test("renderActionBlock escapes quotes in names", () => {
+	const block = renderActionBlock({ name: 'Say "Hi"', command: "echo hi" });
+	assert.ok(block.includes('name = "Say \\"Hi\\""'));
 });

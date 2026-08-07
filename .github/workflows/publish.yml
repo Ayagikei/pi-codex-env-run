@@ -26,8 +26,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          # Node 24 ships npm 11 (trusted publishing requires npm >= 11.5.1;
+          # Node 22's bundled npm 10 fails OIDC exchange with E404).
+          # No registry-url / NODE_AUTH_TOKEN: npm auto-detects the OIDC token
+          # from GitHub Actions and publishes via Trusted Publishing.
+          node-version: "24"
 
       - name: Determine version
         id: version

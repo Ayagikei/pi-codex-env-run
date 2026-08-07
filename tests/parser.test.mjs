@@ -7,23 +7,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 
-// Load the parser through jiti with the same aliases pi's extension loader
-// uses, so typebox / pi-ai imports resolve exactly like at runtime.
-const require = createRequire("/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js");
-const { createJiti } = await import(
-	"/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs",
-);
-const aliases = {
-	"@earendil-works/pi-coding-agent": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/index.js",
-	"@earendil-works/pi-ai": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js",
-	typebox: require.resolve("typebox"),
-};
-const jiti = createJiti(import.meta.url, { interopDefault: true, alias: aliases });
-const { parseEnvironmentToml, findEnvironmentsDir, collectActions } = await jiti.import(
-	path.join(import.meta.dirname, "..", "extensions", "codex-env-run.ts"),
-);
+// Pure parser module: zero pi dependencies, works on any Node >= 22.6
+// (Node's built-in TypeScript type stripping).
+import { parseEnvironmentToml, findEnvironmentsDir, collectActions } from "../src/parser.ts";
 
 test("parses simple single-line action with setup", () => {
 	const env = parseEnvironmentToml(

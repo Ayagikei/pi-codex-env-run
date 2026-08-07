@@ -24,7 +24,8 @@
   },
   "homepage": "https://github.com/Ayagikei/pi-codex-env-run#readme",
   "files": [
-    "extensions/"
+    "extensions/",
+    "src/"
   ],
   "pi": {
     "extensions": [

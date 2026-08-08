@@ -1,5 +1,7 @@
 # pi-codex-env-run
 
+**English** | [简体中文](README.zh-CN.md)
+
 Reuse and manage [Codex](https://github.com/openai/codex) project environment
 actions (`.codex/environments/*.toml`) inside [pi](https://pi.dev) — one
 config file, both tools.

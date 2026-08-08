@@ -29,6 +29,12 @@ import {
 	validateEnvironmentToml,
 	writeEnvironmentFile,
 } from "../src/parser.ts";
+import { execStreaming, formatDuration } from "../src/exec-streaming.ts";
+
+/** Show a status heartbeat every this many ms while an action is running. */
+const HEARTBEAT_MS = 10_000;
+/** Only ping the tool row with elapsed time when output has been silent this long. */
+const SILENT_UPDATE_MS = 5_000;
 
 /** Per-file validation issues for every TOML in an environment directory. */
 function loadEnvFilesForValidation(envDir: string): ReturnType<typeof validateEnvironmentToml>[] {
@@ -91,15 +97,47 @@ export default function (pi: ExtensionAPI) {
 		envDir: string,
 		signal?: AbortSignal,
 		notify?: (msg: string, type: "info" | "warning" | "error") => void,
+		onUpdate?: (tail: string, elapsedMs: number) => void,
 	): Promise<{ output: string; code: number }> => {
 		const projectRoot = dirname(dirname(envDir)); // .codex/environments → project root
+		const startedAt = Date.now();
 		notify?.(`▶ ${action.name}: ${action.command}`, "info");
-		// Commands are shell strings; run them with bash in the project root.
-		const result = await pi.exec("bash", ["-lc", action.command], { cwd: projectRoot, signal });
-		const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-		const status = result.code === 0 ? "done" : `exit code ${result.code}${result.killed ? " (killed)" : ""}`;
-		notify?.(`${action.name}: ${status}`, result.code === 0 ? "info" : "error");
-		return { output, code: result.code };
+
+		let lastLine = "";
+		let lastOutputAt = Date.now();
+		const forwardUpdate = (tail: string, elapsedMs: number) => {
+			lastOutputAt = Date.now();
+			if (tail) {
+				const lines = tail.trimEnd().split("\n");
+				lastLine = lines[lines.length - 1].slice(0, 120);
+			}
+			onUpdate?.(tail, elapsedMs);
+		};
+		// Long-running actions: keep a live status line (elapsed time + latest
+		// output line) and, when output is silent, ping the tool row too.
+		const heartbeat = notify || onUpdate
+			? setInterval(() => {
+					const elapsed = formatDuration(Date.now() - startedAt);
+					notify?.(`⏱ ${action.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`, "info");
+					if (onUpdate && Date.now() - lastOutputAt > SILENT_UPDATE_MS) {
+						onUpdate("", Date.now() - startedAt);
+					}
+				}, HEARTBEAT_MS)
+			: undefined;
+		try {
+			// Commands are shell strings; run them with bash in the project root,
+			// streaming the latest output instead of buffering until exit.
+			const result = await execStreaming(action.command, projectRoot, signal, notify || onUpdate ? forwardUpdate : undefined);
+			const duration = formatDuration(Date.now() - startedAt);
+			const status =
+				result.code === 0
+					? `done in ${duration}`
+					: `exit code ${result.code}${result.killed ? " (killed)" : ""} after ${duration}`;
+			notify?.(`${action.name}: ${status}`, result.code === 0 ? "info" : "error");
+			return { output: result.output, code: result.code };
+		} finally {
+			if (heartbeat) clearInterval(heartbeat);
+		}
 	};
 
 	// Slash command: /run <action> — always registered, degrades gracefully.
@@ -164,7 +202,7 @@ export default function (pi: ExtensionAPI) {
 			parameters: Type.Object({
 				action: StringEnum(actions.map((a) => a.name) as [string, ...string[]]),
 			}),
-			async execute(_toolCallId, params, signal, _onUpdate, toolCtx) {
+			async execute(_toolCallId, params, signal, onUpdate, toolCtx) {
 				const { envDir, actions: currentActions } = refresh(toolCtx);
 				const current =
 					currentActions.find((a) => a.name === params.action) ??
@@ -175,10 +213,17 @@ export default function (pi: ExtensionAPI) {
 						details: {},
 					};
 				}
-				const { output, code } = await runAction(current, envDir, signal ?? undefined);
+				const startedAt = Date.now();
+				// Flip the tool row into live/pending mode right away (like the built-in
+				// bash tool) so a silent command still shows it is running.
+				onUpdate?.({ content: [], details: {} });
+				const { output, code } = await runAction(current, envDir, signal ?? undefined, undefined, (tail, elapsedMs) => {
+					const text = [tail.trimEnd(), `⏱ ${formatDuration(elapsedMs)}`].filter(Boolean).join("\n");
+					onUpdate?.({ content: [{ type: "text", text }], details: {} });
+				});
 				return {
 					content: [{ type: "text", text: output || "(no output)" }],
-					details: { action: params.action, exitCode: code },
+					details: { action: params.action, exitCode: code, durationMs: Date.now() - startedAt },
 				};
 			},
 		});

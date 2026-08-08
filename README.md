@@ -27,6 +27,11 @@ pi install npm:pi-codex-env-run
 
 Then `/run` (or `/run sim` to complete to `simulator`).
 
+Long-running actions stay visible: `run_env_action` streams the latest
+command output (plus a ⏱ elapsed timer) live into the tool row, and `/run`
+shows a running status every 10s (`⏱ name: running for 1m 23s · <last output
+line>`); the completion notice includes the total duration.
+
 ## How it works
 
 - Scans `.codex/environments/*.toml` (all `.toml` files in the directory,

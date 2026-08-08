@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Run tests
-        run: node --test tests/parser.test.mjs
+        run: node --test tests/*.test.mjs
 
       - name: Debug OIDC env
         run: |

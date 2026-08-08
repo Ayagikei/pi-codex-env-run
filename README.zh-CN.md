@@ -22,6 +22,10 @@ pi install npm:pi-codex-env-run
 
 然后使用 `/run`（或 `/run sim` 补全为 `simulator`）。
 
+长时间运行的动作不会“悄无声息”：`run_env_action` 会把最新命令输出（附带 ⏱
+耗时计时）实时流式显示在工具行中；`/run` 每 10 秒更新一次运行状态
+（`⏱ 名称: 已运行 1m 23s · <最后一行输出>`）；完成通知会包含总耗时。
+
 ## 工作原理
 
 - 扫描 `.codex/environments/*.toml`（目录下所有 `.toml` 文件，不止

@@ -12,7 +12,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   # Required for npm Trusted Publishing (OIDC) — no NPM_TOKEN needed.
   id-token: write
 
@@ -42,13 +42,16 @@ jobs:
           fi
 
       - name: Bump version
+        id: bump
         run: |
           CURRENT=$(node -p "require('./package.json').version")
           TARGET="${{ steps.version.outputs.value }}"
           if [ "$CURRENT" != "$TARGET" ]; then
             npm version "$TARGET" --no-git-tag-version
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
           else
             echo "Already at $TARGET, skipping bump"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run tests
@@ -63,3 +66,18 @@ jobs:
         run: npm publish --provenance --access public --loglevel verbose
         env:
           npm_config_loglevel: verbose
+
+      # Keep the repo's package.json in sync with what was actually published:
+      # the bump above never commits, so without this the repo falls behind npm
+      # (e.g. npm had 0.3.0 while package.json stayed at 0.2.0). Only pushes back
+      # when this run performed the bump; a local pre-bump (CURRENT == TARGET)
+      # leaves nothing to commit. [skip ci] guards against future push-triggered
+      # workflows. contents: write is required for this push.
+      - name: Commit version bump back to main
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore: bump version to ${{ steps.version.outputs.value }} [skip ci]"
+          git push origin HEAD:main

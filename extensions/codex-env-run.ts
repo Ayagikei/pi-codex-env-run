@@ -146,7 +146,18 @@ export default function (pi: ExtensionAPI) {
 				result.code === 0
 					? `done in ${duration}`
 					: `exit code ${result.code}${result.killed ? " (killed)" : ""} after ${duration}`;
-			notify?.(`${action.name}: ${status}`, result.code === 0 ? "info" : "error");
+			// Failures usually hide their reason in the last output lines; attach a
+			// short tail so the completion notice says why it failed, not just the code.
+			const tail = result.output
+				.trimEnd()
+				.split("\n")
+				.slice(-5)
+				.map((l) => l.slice(0, 160))
+				.join("\n");
+			notify?.(
+				`${action.name}: ${status}${result.code !== 0 && tail ? `\n${tail}` : ""}`,
+				result.code === 0 ? "info" : "error",
+			);
 			return { output: result.output, code: result.code };
 		} finally {
 			if (heartbeat) clearInterval(heartbeat);

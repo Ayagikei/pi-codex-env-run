@@ -31,8 +31,10 @@ import {
 } from "../src/parser.ts";
 import { execStreaming, formatDuration } from "../src/exec-streaming.ts";
 
-/** Show a status heartbeat every this many ms while an action is running. */
-const HEARTBEAT_MS = 10_000;
+/** Widget status refresh interval while an action is running. */
+const HEARTBEAT_MS = 1_000;
+/** Non-TUI notify heartbeats stay at 10s so they don't spam the transcript/event stream. */
+const NOTIFY_HEARTBEAT_EVERY = 10;
 /** Only ping the tool row with elapsed time when output has been silent this long. */
 const SILENT_UPDATE_MS = 5_000;
 
@@ -98,6 +100,7 @@ export default function (pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		notify?: (msg: string, type: "info" | "warning" | "error") => void,
 		onUpdate?: (tail: string, elapsedMs: number) => void,
+		onHeartbeat?: (elapsed: string, lastLine: string) => void,
 	): Promise<{ output: string; code: number }> => {
 		const projectRoot = dirname(dirname(envDir)); // .codex/environments → project root
 		const startedAt = Date.now();
@@ -114,15 +117,25 @@ export default function (pi: ExtensionAPI) {
 			onUpdate?.(tail, elapsedMs);
 		};
 		// Long-running actions: keep a live status line (elapsed time + latest
-		// output line) and, when output is silent, ping the tool row too.
-		const heartbeat = notify || onUpdate
-			? setInterval(() => {
-					const elapsed = formatDuration(Date.now() - startedAt);
-					notify?.(`⏱ ${action.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`, "info");
-					if (onUpdate && Date.now() - lastOutputAt > SILENT_UPDATE_MS) {
-						onUpdate("", Date.now() - startedAt);
-					}
-				}, HEARTBEAT_MS)
+		// output line) and, when output is silent, ping the tool row too. With
+		// onHeartbeat the status goes to a fixed widget instead of notify spam.
+		// First tick runs immediately so the status shows at 0s, not after the
+		// first interval.
+		let tickCount = 0;
+		const tick = () => {
+			tickCount++;
+			const elapsed = formatDuration(Date.now() - startedAt);
+			if (onHeartbeat) {
+				onHeartbeat(elapsed, lastLine);
+			} else if (tickCount % NOTIFY_HEARTBEAT_EVERY === 1) {
+				notify?.(`⏱ ${action.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`, "info");
+			}
+			if (onUpdate && Date.now() - lastOutputAt > SILENT_UPDATE_MS) {
+				onUpdate("", Date.now() - startedAt);
+			}
+		};
+		const heartbeat = notify || onUpdate || onHeartbeat
+			? (tick(), setInterval(tick, HEARTBEAT_MS))
 			: undefined;
 		try {
 			// Commands are shell strings; run them with bash in the project root,
@@ -174,7 +187,30 @@ export default function (pi: ExtensionAPI) {
 				action = actions[labels.indexOf(picked)];
 			}
 			if (!action) return;
-			await runAction(action, envDir, undefined, ctx.ui.notify.bind(ctx.ui));
+			const target = action;
+			// TUI: live status in a fixed widget (same spot as the todo list) so
+			// heartbeat lines don't spam the transcript; non-TUI falls back to
+			// notify heartbeats. The completion notify below stays in the transcript.
+			const useWidget = ctx.mode === "tui";
+			try {
+				await runAction(
+					target,
+					envDir,
+					undefined,
+					ctx.ui.notify.bind(ctx.ui),
+					undefined,
+					useWidget
+						? (elapsed, lastLine) =>
+								ctx.ui.setWidget(
+									"codex-env-run:status",
+									[`⏱ ${target.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`],
+									{ placement: "aboveEditor" },
+								)
+						: undefined,
+				);
+			} finally {
+				if (useWidget) ctx.ui.setWidget("codex-env-run:status", undefined);
+			}
 		},
 	});
 

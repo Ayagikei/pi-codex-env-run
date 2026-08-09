@@ -29,8 +29,10 @@ Then `/run` (or `/run sim` to complete to `simulator`).
 
 Long-running actions stay visible: `run_env_action` streams the latest
 command output (plus a ⏱ elapsed timer) live into the tool row, and `/run`
-shows a running status every 10s (`⏱ name: running for 1m 23s · <last output
-line>`); the completion notice includes the total duration.
+shows a live status every second (`⏱ name: running for 1m 23s · <last output
+line>`) in a fixed widget above the editor (interactive TUI) instead of
+spamming the transcript; non-TUI modes fall back to 10s notify heartbeats. The
+completion notice includes the total duration.
 
 ## How it works
 

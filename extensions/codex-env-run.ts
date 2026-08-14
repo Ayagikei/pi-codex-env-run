@@ -80,6 +80,9 @@ function iconEmoji(icon?: string): string {
 	}
 }
 
+/** Track the currently running action so /stop-run can abort it. */
+let currentRun: { name: string; controller: AbortController } | null = null;
+
 export default function (pi: ExtensionAPI) {
 	// Resolved once at startup; used for /run completion before any handler runs.
 	let startupEnvDir = findEnvironmentsDir(process.cwd());
@@ -104,7 +107,15 @@ export default function (pi: ExtensionAPI) {
 	): Promise<{ output: string; code: number }> => {
 		const projectRoot = dirname(dirname(envDir)); // .codex/environments → project root
 		const startedAt = Date.now();
-		notify?.(`▶ ${action.name}: ${action.command}`, "info");
+		notify?.(`▶ ${action.name}: ${action.command}\n  💡 /stop-run to abort`, "info");
+
+		// If no external signal (slash command path), create our own controller so
+		// /stop-run can abort the run.
+		const ownController = !signal ? new AbortController() : undefined;
+		if (ownController) {
+			signal = ownController.signal;
+			currentRun = { name: action.name, controller: ownController };
+		}
 
 		let lastLine = "";
 		let lastOutputAt = Date.now();
@@ -123,15 +134,20 @@ export default function (pi: ExtensionAPI) {
 		// first interval.
 		let tickCount = 0;
 		const tick = () => {
-			tickCount++;
-			const elapsed = formatDuration(Date.now() - startedAt);
-			if (onHeartbeat) {
-				onHeartbeat(elapsed, lastLine);
-			} else if (tickCount % NOTIFY_HEARTBEAT_EVERY === 1) {
-				notify?.(`⏱ ${action.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`, "info");
-			}
-			if (onUpdate && Date.now() - lastOutputAt > SILENT_UPDATE_MS) {
-				onUpdate("", Date.now() - startedAt);
+			try {
+				tickCount++;
+				const elapsed = formatDuration(Date.now() - startedAt);
+				if (onHeartbeat) {
+					onHeartbeat(elapsed, lastLine);
+				} else if (tickCount % NOTIFY_HEARTBEAT_EVERY === 1) {
+					notify?.(`⏱ ${action.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`, "info");
+				}
+				if (onUpdate && Date.now() - lastOutputAt > SILENT_UPDATE_MS) {
+					onUpdate("", Date.now() - startedAt);
+				}
+			} catch {
+				// ctx became stale after session replacement/reload; stop heartbeating.
+				if (heartbeat) clearInterval(heartbeat);
 			}
 		};
 		const heartbeat = notify || onUpdate || onHeartbeat
@@ -161,6 +177,7 @@ export default function (pi: ExtensionAPI) {
 			return { output: result.output, code: result.code };
 		} finally {
 			if (heartbeat) clearInterval(heartbeat);
+			if (ownController) currentRun = null;
 		}
 	};
 
@@ -199,29 +216,53 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (!action) return;
 			const target = action;
+			if (currentRun) {
+				ctx.ui.notify(`⚠ ${currentRun.name} is still running — /stop-run first`, "warning");
+				return;
+			}
 			// TUI: live status in a fixed widget (same spot as the todo list) so
 			// heartbeat lines don't spam the transcript; non-TUI falls back to
 			// notify heartbeats. The completion notify below stays in the transcript.
+			//
+			// Fire-and-forget: the handler returns immediately so the TUI input is
+			// not blocked and /stop-run can be dispatched while the action runs.
+			// The background promise handles widget teardown and completion notify;
+			// ctx may go stale after session replacement, so all ctx access is guarded.
 			const useWidget = ctx.mode === "tui";
-			try {
-				await runAction(
-					target,
-					envDir,
-					undefined,
-					ctx.ui.notify.bind(ctx.ui),
-					undefined,
-					useWidget
-						? (elapsed, lastLine) =>
-								ctx.ui.setWidget(
-									"codex-env-run:status",
-									[`⏱ ${target.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`],
-									{ placement: "aboveEditor" },
-								)
-						: undefined,
-				);
-			} finally {
-				if (useWidget) ctx.ui.setWidget("codex-env-run:status", undefined);
+			const notify = ctx.ui.notify.bind(ctx.ui);
+			const setWidget = useWidget
+				? (lines: string[] | undefined) =>
+						ctx.ui.setWidget("codex-env-run:status", lines, { placement: "aboveEditor" })
+				: undefined;
+			void runAction(
+				target,
+				envDir,
+				undefined,
+				notify,
+				undefined,
+				useWidget
+					? (elapsed, lastLine) =>
+							setWidget?.([
+								`⏱ ${target.name}: running for ${elapsed}${lastLine ? ` · ${lastLine}` : ""}`,
+							])
+					: undefined,
+			).finally(() => {
+				try { setWidget?.(undefined); } catch {}
+			});
+		},
+	});
+
+	// Slash command: /stop-run — abort the currently running action.
+	pi.registerCommand("stop-run", {
+		description: "Stop the currently running Codex environment action (abort /run)",
+		handler: async (_args, ctx: ExtensionCommandContext) => {
+			if (!currentRun) {
+				ctx.ui.notify("No action is currently running", "warning");
+				return;
 			}
+			const name = currentRun.name;
+			currentRun.controller.abort();
+			ctx.ui.notify(`⏹ Stopping ${name}… (SIGTERM, SIGKILL in 5s if ignored)`, "info");
 		},
 	});
 

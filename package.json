@@ -1,6 +1,6 @@
 {
   "name": "pi-codex-env-run",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Run & manage Codex .codex/environments/*.toml actions in pi — /run, run_env_action, manage_env_action (list/validate/add/update/remove)",
   "type": "module",
   "license": "MIT",

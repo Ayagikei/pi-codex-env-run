@@ -30,6 +30,7 @@ import {
 	writeEnvironmentFile,
 } from "../src/parser.ts";
 import { execStreaming, formatDuration } from "../src/exec-streaming.ts";
+import { Text } from "@earendil-works/pi-tui";
 
 /** Widget status refresh interval while an action is running. */
 const HEARTBEAT_MS = 1_000;
@@ -290,6 +291,53 @@ export default function (pi: ExtensionAPI) {
 			parameters: Type.Object({
 				action: StringEnum(actions.map((a) => a.name) as [string, ...string[]]),
 			}),
+			renderCall(args, theme, context) {
+				const state = context.state;
+				if (context.executionStarted && state.startedAt === undefined) {
+					state.startedAt = Date.now();
+				}
+				const actionName = (args as any)?.action ?? "?";
+				const icon = iconEmoji(actions.find((a) => a.name === actionName)?.icon);
+				const text = context.lastComponent ?? new Text("", 0, 0);
+				text.setText(theme.fg("toolTitle", theme.bold(`${icon} ${actionName}`)));
+				return text;
+			},
+			renderResult(result, options, theme, context) {
+				const state = context.state;
+				if (state.startedAt !== undefined && options.isPartial && !state.interval) {
+					state.interval = setInterval(() => context.invalidate(), 1000);
+				}
+				if (!options.isPartial || context.isError) {
+					state.endedAt ??= Date.now();
+					if (state.interval) { clearInterval(state.interval); state.interval = undefined; }
+				}
+				const component = context.lastComponent ?? new Text("", 0, 0);
+				const output = (result.content ?? [])
+					.filter((c: any) => c.type === "text")
+					.map((c: any) => c.text)
+					.join("\n")
+					.trim();
+				const actionName = (context.args as any)?.action ?? "";
+				const icon = iconEmoji(actions.find((a) => a.name === actionName)?.icon);
+				const elapsed = state.startedAt !== undefined
+					? formatDuration((state.endedAt ?? Date.now()) - state.startedAt)
+					: "";
+				const header = theme.fg("toolTitle", theme.bold(`${icon} ${actionName}`));
+				const status = options.isPartial
+					? theme.fg("muted", ` running for ${elapsed}`)
+					: result.details && (result.details as any).exitCode === 0
+						? theme.fg("muted", ` done in ${elapsed}`)
+						: theme.fg("warning", ` exit ${(result.details as any)?.exitCode ?? "?"} after ${elapsed}`);
+				const lines = [header + status];
+				if (output) {
+					for (const line of output.split("\n").slice(-10)) {
+						lines.push(theme.fg("toolOutput", line.slice(0, 200)));
+					}
+				}
+				component.setText(lines.join("\n"));
+				component.invalidate();
+				return component;
+			},
 			async execute(_toolCallId, params, signal, onUpdate, toolCtx) {
 				const { envDir, actions: currentActions } = refresh(toolCtx);
 				const current =
